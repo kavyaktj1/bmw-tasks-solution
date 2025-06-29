@@ -1,25 +1,43 @@
+'''
+python -m venv env
+source env/bin/activate
+pip install --upgrade pip
+pip install --upgrade transformers sentence-transformers accelerate
+pip show transformers sentence-transformers accelerate
+python main.py
+'''
+
 import pandas as pd
 import numpy as np
 import re
+import os 
+import torch
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
-import os 
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-import torch
+#from huggingface_hub import InferenceClient
 
-# --- Global Data and Model Initialization ---
+# Global Data and Model Initialization details
 parts_df = None
 similarity_model = None # For sentence embeddings, crucial for RAG
 llm_tokenizer = None # For Mistral
 llm_model = None     # For Mistral
 llm_pipeline = None  # If using Hugging Face pipeline for Mistral
 
-# --- Configuration ---
+# Configuration
 CSV_FILEPATH = "Parts.csv"
 SIMILARITY_MODEL_NAME = 'all-MiniLM-L6-v2'
 MISTRAL_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2" # Or another Mistral variant
 
-# --- 1. Data Loading ---
+# preprocess the tex - Data Cleaning
+def preprocess_text_for_similarity(text):
+    """Cleans description text for embedding."""
+    text = str(text).lower()
+    text = re.sub(r'[^\w\s\-\.\/x]', '', text) # Keep numbers, letters, spaces, -, ., /, x
+    text = re.sub(r'\s+', ' ', text).strip() # Replace multiple spaces with single
+    return text
+
+# Data Loading Function
 def load_data(filepath=CSV_FILEPATH):
     """Loads the parts data from a CSV file."""
     global parts_df
@@ -52,11 +70,10 @@ def load_data(filepath=CSV_FILEPATH):
         print(f"Error loading data: {e}")
         return False
 
-# --- Model Initialization ---
-
+# Model Initialization Function
 def initialize_models():
     """Initializes the NLP models for similarity and the LLM."""
-    global similarity_model #, llm_tokenizer, llm_model, llm_pipeline
+    global similarity_model,llm_tokenizer, llm_model, llm_pipeline
     print(f"Initializing Sentence Transformer Model ({SIMILARITY_MODEL_NAME})...")
     try:
         similarity_model = SentenceTransformer(SIMILARITY_MODEL_NAME)
@@ -65,9 +82,9 @@ def initialize_models():
         print(f"Error initializing Sentence Transformer model: {e}")
         print("Please ensure you have an internet connection for the first download.")
         similarity_model = None
-
+    
     # --- Mistral Model Initialization (Choose one method) ---
-    # Option A: Local loading via Hugging Face Transformers (requires powerful GPU and VRAM)
+    # Option A: Local loading via Hugging Face Transformers (requires powerful GPU and VRAM at least 16–24 GB for 7B models)
     # print(f"Initializing Mistral LLM ({MISTRAL_MODEL_NAME})... This requires significant resources.")
     # try:
     #     llm_tokenizer = AutoTokenizer.from_pretrained(MISTRAL_MODEL_NAME)
@@ -86,7 +103,7 @@ def initialize_models():
 
     return similarity_model is not None # and llm_pipeline is not None # If LLM is mandatory
 
-# --- Task 1: Chatbot Implementation (Revised for LLM) ---
+# Task 1.1: Function to find a specific part ID
 def generate_context_for_part(part_id):
     """Generates a textual context for a given part ID."""
     if parts_df is None:
@@ -107,6 +124,7 @@ def generate_context_for_part(part_id):
 
     return context.strip()
 
+# Task 1.2 - Function to check for "find similar" intent (simple keyword check for demonstration)
 def retrieve_similar_parts_context(query_text, num_results=3):
     """Retrieves context for similar parts based on a natural language query.
     This will use the pre-computed embeddings."""
@@ -116,6 +134,8 @@ def retrieve_similar_parts_context(query_text, num_results=3):
 
     query_embedding = similarity_model.encode([preprocess_text_for_similarity(query_text)])
     similarities = cosine_similarity(query_embedding, np.array(parts_df['EMBEDDING'].tolist()))[0]
+    #calculates cosine similarity between a query embedding and a list of stored embeddings in a DataFrame.
+    #It tells you how similar the query is to each row in the dataset 
 
     # Get indices of top N similar parts (excluding self-similarity if query is an existing part description)
     # Sort in descending order and take top N, make sure not to include the query itself if it's in the dataset
@@ -142,6 +162,7 @@ def retrieve_similar_parts_context(query_text, num_results=3):
 
     return context
 
+# Task 1.3 - Function to pas query and context to LLM for final answer
 def generate_llm_response(user_query, context=""):
     """
     Generates a response using Mistral, leveraging provided context.
@@ -198,6 +219,7 @@ def generate_llm_response(user_query, context=""):
     else:
         return "I'm not sure how to answer that based on the provided data. Could you rephrase or ask about a specific part ID or characteristic?"
 
+# Task 1 Function
 def chatbot_interface_llm():
     """Interactive chatbot leveraging an LLM for answering questions."""
 
@@ -214,7 +236,7 @@ def chatbot_interface_llm():
         #user_input : tell me about A10
         context = ""
 
-        # 1. Try to find a specific part ID
+        # 1.1 Try to find a specific part ID
         part_id_match = re.search(r'\b([aA]\d+)\b', user_input)
         #part_id_match : <re.Match object; span=(14, 17), match='A10'>
         if part_id_match:
@@ -226,130 +248,21 @@ def chatbot_interface_llm():
             else:
                 context = part_context
 
-        # 2. Check for "find similar" intent (simple keyword check for demonstration)
+        # 1.2 Check for "find similar" intent (simple keyword check for demonstration)
         elif "similar" in user_input.lower() or "alternative" in user_input.lower():
             context = retrieve_similar_parts_context(user_input)
         else:
             # If no specific part ID or "similar" intent, still try to answer generally
             context = "" # No specific context from data retrieval initially
 
-        # 3. Pass query and context to LLM for final answer
+        # 1.3. Pass query and context to LLM for final answer
         response = generate_llm_response(user_input, context)
         print(f"Chatbot: {response}")
 
-# --- Rest of the code (Task 2 & 3 functions) remain largely the same or are refined ---
-# --- Task 2: Data Extraction and Normalization (Unchanged in logic, just callable) ---
-
-def extract_and_normalize_data():
-    # ... (Keep the existing Task 2 code as is) ...
-    print("\n--- Task 2: Data Extraction and Normalization ---")
-    if parts_df is None:
-        print("Data not loaded. Cannot perform extraction and normalization.")
-        return
-
-    columns_to_extract = [
-        'ID', 'DESCRIPTION', 'Rated Current (A)', 'Rated Voltage (V)',
-        'Rated Voltage(AC) (V)', 'Rated Voltage(DC) (V)', 'Material',
-        'Size', 'Height', 'Length in mm', 'Maximum Power Dissipation',
-        'Operating Temperature-Max (Cel)', 'Operating Temperature-Min (Cel)',
-        'Pre-arcing time-Min (ms)', 'Rated Breaking Capacity (A)',
-        'Joule-integral-Nom (J)']
-
-    extracted_df = parts_df[columns_to_extract].copy()
-
-    def normalize_current(current_str):
-        if pd.isna(current_str): return np.nan
-        match = re.search(r'(\d+(\.\d+)?)\s*A', str(current_str))
-        if match:
-            return float(match.group(1))
-        return np.nan
-
-    def normalize_voltage(voltage_str):
-        if pd.isna(voltage_str): return np.nan
-        match = re.search(r'(\d+)\s*V', str(voltage_str))
-        if match:
-            return int(match.group(1))
-        return np.nan
-
-    def normalize_dimension(dim_str):
-        if pd.isna(dim_str): return np.nan
-        match = re.search(r'(\d+(\.\d+)?)\s*mm', str(dim_str))
-        if match:
-            return float(match.group(1))
-        return np.nan
-
-    def normalize_power(power_str):
-        if pd.isna(power_str): return np.nan
-        match = re.search(r'(\d+(\.\d+)?)\s*W', str(power_str))
-        if match:
-            return float(match.group(1))
-        return np.nan
-
-    def normalize_temperature(temp_str):
-        if pd.isna(temp_str): return np.nan
-        match = re.search(r'([-]?\d+)\s*Cel', str(temp_str))
-        if match:
-            return int(match.group(1))
-        return np.nan
-
-    def normalize_joule_integral(joule_str):
-        if pd.isna(joule_str): return np.nan
-        match = re.search(r'(\d+(\.\d+)?)\s*J', str(joule_str))
-        if match:
-            return float(match.group(1))
-        return np.nan
-
-    def normalize_time(time_str):
-        if pd.isna(time_str): return np.nan
-        match = re.search(r'(\d+)\s*ms', str(time_str))
-        if match:
-            return int(match.group(1))
-        return np.nan
-
-    extracted_df['Rated Current (A)_Normalized'] = extracted_df['Rated Current (A)'].apply(normalize_current)
-    extracted_df['Rated Voltage (V)_Normalized'] = extracted_df['Rated Voltage (V)'].apply(normalize_voltage)
-    extracted_df['Rated Voltage(AC) (V)_Normalized'] = extracted_df['Rated Voltage(AC) (V)'].apply(normalize_voltage)
-    extracted_df['Rated Voltage(DC) (V)_Normalized'] = extracted_df['Rated Voltage(DC) (V)'].apply(normalize_voltage)
-    extracted_df['Height_Normalized_mm'] = extracted_df['Height'].apply(normalize_dimension)
-    extracted_df['Length in mm_Normalized'] = extracted_df['Length in mm'].apply(normalize_dimension)
-    extracted_df['Maximum Power Dissipation_Normalized_W'] = extracted_df['Maximum Power Dissipation'].apply(normalize_power)
-    extracted_df['Operating Temperature-Max (Cel)_Normalized'] = extracted_df['Operating Temperature-Max (Cel)'].apply(normalize_temperature)
-    extracted_df['Operating Temperature-Min (Cel)_Normalized'] = extracted_df['Operating Temperature-Min (Cel)'].apply(normalize_temperature)
-    extracted_df['Pre-arcing time-Min (ms)_Normalized'] = extracted_df['Pre-arcing time-Min (ms)'].apply(normalize_time)
-    extracted_df['Rated Breaking Capacity (A)_Normalized'] = extracted_df['Rated Breaking Capacity (A)'].apply(normalize_current)
-    extracted_df['Joule-integral-Nom (J)_Normalized'] = extracted_df['Joule-integral-Nom (J)'].apply(normalize_joule_integral)
-
-    print("\nOriginal and Normalized Data for selected columns (first 5 rows):")
-
-    display_cols = [
-        'ID', 'DESCRIPTION',
-        'Rated Current (A)', 'Rated Current (A)_Normalized',
-        'Rated Voltage (V)', 'Rated Voltage (V)_Normalized',
-        'Height', 'Height_Normalized_mm',
-        'Maximum Power Dissipation', 'Maximum Power Dissipation_Normalized_W',
-        'Operating Temperature-Max (Cel)', 'Operating Temperature-Max (Cel)_Normalized']
-
-    print(extracted_df[display_cols].head().to_string())
-
-    print("\nSummary of Normalized Data (Non-null counts and Dtype):")
-
-    print(extracted_df.info())
-
-    return extracted_df
-
-# --- Task 3: Similar Parts Finder (Modified to use pre-computed embeddings) ---
-
-def preprocess_text_for_similarity(text):
-    """Cleans description text for embedding."""
-    text = str(text).lower()
-    text = re.sub(r'[^\w\s\-\.\/x]', '', text) # Keep numbers, letters, spaces, -, ., /, x
-    text = re.sub(r'\s+', ' ', text).strip() # Replace multiple spaces with single
-    return text
-
-
+# Task 2 Function to find alternate parts
 def find_similar_parts(num_alternatives=5):
     #Finds the top N most similar parts based on their description using pre-computed embeddings.
-    print("\n--- Task 3: Similar Parts Finder ---")
+    print("\n--- Task 2: Similar Parts Finder ---")
 
     if parts_df is None or similarity_model is None or 'EMBEDDING' not in parts_df.columns:
         print("Data, similarity model, or pre-computed embeddings not loaded. Cannot find similar parts.")
@@ -398,7 +311,7 @@ def find_similar_parts(num_alternatives=5):
     # For large datasets, printing all results might be overwhelming.
     # You might want to print only the first few or allow user to search for specific parts.
 
-    for part_data in results[:10]: # Print only first 10 for demonstration
+    for part_data in results[:5]: # Print only first 5 for demonstration
         print(f"\nOriginal Part ID: {part_data['Original_ID']}")
         print(f"Description: \"{part_data['Original_Description']}\"")
         print("Found Alternatives:")
@@ -407,49 +320,41 @@ def find_similar_parts(num_alternatives=5):
                 print(f"  - ID: {alt['Alternative_ID']}, Similarity: {alt['Similarity_Score']:.4f}, Description: \"{alt['Alternative_Description']}\"")
         else:
             print("  No alternatives found (or not enough data).")
-    if len(results) > 10:
-        print(f"\n... (Showing only first 10 results out of {len(results)}. Run this task again to see more.)")
+    if len(results) > 5:
+        print(f"\n... (Showing only first 5 results out of {len(results)}. Run this task again to see more.)")
 
     return results
 
-# --- Main Execution Flow ---
+# Main Execution Flow
 def main():
     """Main function to orchestrate the execution of all tasks."""
     print("Starting Parts Analysis Application...")
 
     if not os.path.exists(CSV_FILEPATH):
         print(f"Error: {CSV_FILEPATH} not found. Please create it with 1000 records.")
-
-        # Optionally, run the dummy data generator here if it's for testing
-        # from your_generator_script import generate_dummy_parts_csv
-        # generate_dummy_parts_csv(num_rows=1000, filename=CSV_FILEPATH)
-        # if not load_data(): return # Try loading again after generating
         return
 
     # Initialize models first, then load data (which also uses models for embeddings)
     if not initialize_models():
         print("Exiting due to model initialization error. Please check dependencies and internet connection.")
         return
-
-    if not load_data(): # Load data and precompute embeddings
+    
+    # Load data and precompute embeddings
+    if not load_data(): 
         print("Exiting due to data loading error.")
         return
 
     while True:
-        print("\nSelect a task to run:")
+        print("\nHello, Hope you are doing good. Select a task to run:")
         print("1. LLM Chatbot Interface (Task 1)")
-        print("2. Data Extraction and Normalization (Task 2)")
-        print("3. Similar Parts Finder (Task 3)")
+        print("2. Similar Parts Finder (Task 3)")
         print("0. Exit Application")
 
-        choice = input("Enter your choice (0-3): ").strip()
+        choice = input("Enter your choice (0-2): ").strip()
         if choice == '1':
             chatbot_interface_llm()
 
         elif choice == '2':
-            extract_and_normalize_data()
-
-        elif choice == '3':
             find_similar_parts()
 
         elif choice == '0':
